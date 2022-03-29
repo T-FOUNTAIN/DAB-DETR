@@ -61,8 +61,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # for name, param in model.named_parameters():
         #     if param.grad is None:
         #         print(name, param.is_leaf)
-        # for name, parms in model.named_parameters():
-        #     print('-->name:', name, '-->grad_requirs:',parms.requires_grad, ' -->grad_value:',parms.grad)
+        for name, parms in model.named_parameters():
+            grad = parms.grad
+            if grad==None:
+                continue
+            else:
+                if torch.all(grad==0):
+                    print('-->name:', name, '-->grad_requirs:',parms.requires_grad, ' -->grad_value_shape:',parms.grad.shape)
 
         if max_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
