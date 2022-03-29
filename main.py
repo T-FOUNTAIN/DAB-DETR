@@ -65,9 +65,9 @@ def get_args_parser():
     parser.add_argument('--set_cost_giou', default=3.0, type=float, help="giou box coefficient in the matching cost")
 
     # * Loss coefficients
-    parser.add_argument('--cls_loss_coef', default=5.0, type=float)
-    parser.add_argument('--bbox_loss_coef', default=100.0, type=float)
-    parser.add_argument('--giou_loss_coef', default=5.0, type=float)
+    parser.add_argument('--cls_loss_coef', default=2.0, type=float)
+    parser.add_argument('--bbox_loss_coef', default=5.0, type=float)
+    parser.add_argument('--giou_loss_coef', default=2.0, type=float)
     parser.add_argument('--focal_alpha', default=0.25, type=float)
 
     # dataset parameters
