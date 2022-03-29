@@ -58,7 +58,7 @@ class TransformerDecoder(nn.Module):
             else:
                 reference_boxes = reference_boxes
 
-
+            reference_boxes = reference_boxes.sigmoid()
             # get sine embedding for the query vector
             query_ref_boxes_sine_embed_cx = gen_sineembed_for_single_position(reference_boxes[..., 0])
             query_ref_boxes_sine_embed_cy = gen_sineembed_for_single_position(reference_boxes[..., 1])
@@ -96,10 +96,16 @@ class TransformerDecoder(nn.Module):
                            memory_h=memory_h_,
                            memory_w=memory_w_,
                            grid=grid_, )
-            reference_boxes = reference_boxes + self.offset # updated_anchor_box ,without sigmoid()
 
+            intermediate_reference_boxes.append((reference_boxes + self.offset).transpose(0, 1))
+            if layer_id > 1:
+                reference_boxes = reference_boxes.detach() + self.offset # updated_anchor_box ,without sigmoid()
+            else:
+                reference_boxes = reference_boxes + self.offset
+            # reference_boxes = reference_boxes.detach() + self.offset
+            # reference_boxes = reference_boxes + self.offset
             intermediate.append(output)
-            intermediate_reference_boxes.append(reference_boxes.transpose(0, 1))
+
         return torch.stack(intermediate).transpose(1, 2), \
                torch.stack(intermediate_reference_boxes)
 
@@ -153,12 +159,11 @@ class TransformerDecoderLayer(nn.Module):
                 grid=None):
 
         num_queries, bs, c = tgt.shape
-        reference_boxes_sigmoid = torch.cat([reference_boxes[...,:4].sigmoid(), reference_boxes[...,4:5]], dim=-1) # [num_queries, batch_size, 5]
-        anchor_cx = reference_boxes_sigmoid[..., 0:1].flatten(0, 1) * memory_w
-        anchor_cy = reference_boxes_sigmoid[..., 1:2].flatten(0, 1) * memory_h
-        anchor_w = reference_boxes_sigmoid[..., 2:3].flatten(0, 1) * memory_w
-        anchor_h = reference_boxes_sigmoid[..., 3:4].flatten(0, 1) * memory_h
-        anchor_theta = reference_boxes_sigmoid[..., 4:5].flatten(0, 1) #(num_queries*bs, 1)
+        anchor_cx = reference_boxes[..., 0:1].flatten(0, 1) * memory_w
+        anchor_cy = reference_boxes[..., 1:2].flatten(0, 1) * memory_h
+        anchor_w = reference_boxes[..., 2:3].flatten(0, 1) * memory_w
+        anchor_h = reference_boxes[..., 3:4].flatten(0, 1) * memory_h
+        anchor_theta = (reference_boxes[..., 4:5].flatten(0, 1) -0.5) * 3.1415926 #(num_queries*bs, 1)
 
         cos_r = torch.cos(anchor_theta)
         sin_r = torch.sin(anchor_theta)
