@@ -129,27 +129,26 @@ class FastDETR(nn.Module):
         for lvl in range(hs.shape[0]):
             reference_before_sigmoid = reference[lvl]
             bbox_offset = self.bbox_embed[lvl](hs[lvl])
-            anchor_box = (reference_before_sigmoid + bbox_offset)
-            outputs_coord= torch.cat([anchor_box[..., :4].sigmoid(), anchor_box[...,4:5]], dim=-1)
+            outputs_coord = (reference_before_sigmoid + bbox_offset).sigmoid()
             outputs_coords.append(outputs_coord)
             outputs_class.append(self.class_embed[lvl](hs[lvl]))
         outputs_coords = torch.stack(outputs_coords)
         outputs_class = torch.stack(outputs_class)
-        outputs_polys = box_ops.obox2polys(outputs_coords)
+        # outputs_polys = box_ops.obox2polys(outputs_coords)
 
-        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coords[-1], 'pred_polys': outputs_polys[-1]}
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coords[-1]}
         if self.aux_loss:
-           out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coords, outputs_polys)
+           out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coords)
 
         return out
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coords, output_polys):
+    def _set_aux_loss(self, outputs_class, outputs_coords):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b, 'pred_polys': c}
-                for a, b, c in zip(outputs_class[:-1], outputs_coords[:-1], output_polys[:-1])]
+        return [{'pred_logits': a, 'pred_boxes': b}
+                for a, b in zip(outputs_class[:-1], outputs_coords[:-1])]
 
 
 class SetCriterion(nn.Module):
@@ -219,25 +218,14 @@ class SetCriterion(nn.Module):
            The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
         """
         assert 'pred_boxes' in outputs
-        assert 'pred_polys' in outputs
         idx = self._get_src_permutation_idx(indices)
         src_oboxes = outputs['pred_boxes'][idx]
-        src_polys = outputs['pred_polys'][idx]
 
-        target_polys = torch.cat([t['polys'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         target_theta = torch.cat([t['theta'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         target_oboxes = torch.cat([target_boxes, target_theta], dim=-1)
 
-        target_polys_matched = target_polys.unsqueeze(1).repeat(1, 4, 1) # [n, 4, 8]
-        pred1 = torch.cat([src_polys[:, 2:], src_polys[:, :2]], dim=-1)  # (x2,y2,x3,y3,x4,y4,x1,y1)
-        pred2 = torch.cat([src_polys[:, 4:], src_polys[:, :4]], dim=-1)  # (x3,y3,x4,y4,x1,y1,x2,y2)
-        pred3 = torch.cat([src_polys[:, 6:], src_polys[:, :6]], dim=-1)  # (x4,y4,x1,y1,x2,y2,x3,y3)
-        src_polys_matched = torch.cat([src_polys.unsqueeze(1), pred1.unsqueeze(1), pred2.unsqueeze(1), pred3.unsqueeze(1)], dim=1)# [n, 4, 8]
-        loss_bbox = F.smooth_l1_loss(src_polys_matched.to(dtype=torch.float64), target_polys_matched.to(dtype=torch.float64), reduction='none').sum(-1) #[n, 4]
-        if target_polys.shape[0] > 0: # no object
-            loss_bbox = torch.min(loss_bbox, dim=-1)[0]
-
+        loss_bbox = F.l1_loss(src_oboxes, target_oboxes, reduction='none')
         loss_giou = cal_giou(src_oboxes, target_oboxes)
 
         losses = {}
@@ -316,7 +304,7 @@ class PostProcess(nn.Module):
                           For evaluation, this must be the original image size (before any data augmentation)
                           For visualization, this should be the image size after data augment, but before padding
         """
-        out_logits, out_boxes = outputs['pred_logits'], outputs['pred_polys']
+        out_logits, out_boxes = outputs['pred_logits'], outputs['pred_boxes']
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
@@ -325,7 +313,8 @@ class PostProcess(nn.Module):
         scores = topk_values
         topk_boxes = topk_indexes // out_logits.shape[2]
         labels = topk_indexes % out_logits.shape[2]
-        polys = torch.gather(out_boxes, 1, topk_boxes.unsqueeze(-1).repeat(1,1,8)).view(-1, 8)
+        polys = box_ops.obox2polys(out_boxes)
+        polys = torch.gather(polys, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 8)).view(-1, 8)
         # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = target_sizes.unbind(1)
         scale = torch.stack([img_w, img_h, img_w, img_h, img_w, img_h, img_w, img_h], dim=1).unsqueeze(1).repeat(1, out_logits.shape[1],1)

@@ -59,11 +59,9 @@ class HungarianMatcher(nn.Module):
         # We flatten to compute the cost matrices in a batch
         out_prob = outputs["pred_logits"].flatten(0, 1).sigmoid()  # [batch_size * num_queries, num_classes]
         out_oboxes = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 5]
-        out_polys = outputs["pred_polys"].flatten(0, 1)  # [batch_size, num_queries, 8]
 
         # Also concat the target labels and boxes
         tgt_ids = torch.cat([v["labels"] for v in targets])
-        tgt_polys = torch.cat([v["polys"] for v in targets])
         tgt_boxes = torch.cat([v["boxes"] for v in targets])
         tgt_theta = torch.cat([v["theta"] for v in targets])
         tgt_oboxes = torch.cat([tgt_boxes, tgt_theta], dim=-1)
@@ -78,9 +76,7 @@ class HungarianMatcher(nn.Module):
 
         num_gts = tgt_ids.shape[0]
         # Compute the L1 cost between boxes
-        out_polys_tmp = out_polys.unsqueeze(1).repeat(1, num_gts, 1)
-        tgt_polys_tmp = tgt_polys.unsqueeze(0).repeat(num_queries*bs, 1, 1)
-        cost_bbox = matched_l1_loss(out_polys_tmp, tgt_polys_tmp)[0]
+        cost_bbox =  torch.cdist(out_oboxes, tgt_oboxes, p=1)
         # print('cost_bbox', cost_bbox.shape, cost_bbox)
 
         # Compute the iou cost betwen boxes
