@@ -103,7 +103,7 @@ def obox2polys(oboxes):
     center = torch.cat([cx.unsqueeze(-1), cy.unsqueeze(-1)], dim=-1)
     w = w.unsqueeze(-1)
     h = h.unsqueeze(-1)
-    theta = theta.unsqueeze(-1)
+    theta = (theta.unsqueeze(-1) - 0.5)*3.1415926
     Cos, Sin = torch.cos(theta), torch.sin(theta)
     vector1 = torch.cat([w / 2 * Cos, -w / 2 * Sin], dim=-1)
     vector2 = torch.cat([-h / 2 * Sin, -h / 2 * Cos], dim=-1)

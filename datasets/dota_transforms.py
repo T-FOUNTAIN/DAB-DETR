@@ -307,11 +307,13 @@ class Normalize(object):
         if "boxes" in target:
             boxes = box_xyxy_to_cxcywh(target["boxes"])
             polys = target["polys"]
+            theta = target["theta"]
             boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
             polys = polys / torch.tensor([w, h, w, h, w, h, w, h], dtype=torch.float32)
             tgt["boxes"] = boxes
             tgt["polys"] = polys
             tgt["img_size"] = torch.as_tensor([h, w])
+            tgt["theta"] = theta / 3.1415926 + 0.5
         return image, tgt
 
 

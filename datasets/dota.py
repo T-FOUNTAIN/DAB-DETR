@@ -206,7 +206,6 @@ if __name__ == '__main__':
         for j in range(len(target)):
             if target[j]['boxes'].shape[0]>0:
                 h, w = target[j]['img_size']
-
                 orig_box = target[j]['boxes'][0]* torch.tensor([w, h, w, h])
                 r = target[j]['theta'][0]
                 cos_r = torch.cos(r)
