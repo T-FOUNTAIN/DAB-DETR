@@ -32,4 +32,3 @@ class DotaEvaluator(object):
         gts_all_gather = []
         bt.eval_map(merged_res, merged_gts, iou_thr=self.iou_thr,
                     nproc=self.nproc, dataset=self.gt_cls, use_07_metric=self.voc_metric)
-

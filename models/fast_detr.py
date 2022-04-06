@@ -122,19 +122,19 @@ class FastDETR(nn.Module):
             srcs.append(self.input_proj[l](src))
             masks.append(mask)
             assert mask is not None
+
         hs, reference = self.transformer(srcs, masks, self.query_embed.weight, pos_embeds)
 
         outputs_coords = []
         outputs_class = []
         for lvl in range(hs.shape[0]):
-            reference_before_sigmoid = reference[lvl]
+            reference_before_sigmoid = inverse_sigmoid(reference[lvl])
             bbox_offset = self.bbox_embed[lvl](hs[lvl])
             outputs_coord = (reference_before_sigmoid + bbox_offset).sigmoid()
             outputs_coords.append(outputs_coord)
             outputs_class.append(self.class_embed[lvl](hs[lvl]))
         outputs_coords = torch.stack(outputs_coords)
         outputs_class = torch.stack(outputs_class)
-        # outputs_polys = box_ops.obox2polys(outputs_coords)
 
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coords[-1]}
         if self.aux_loss:
@@ -308,16 +308,24 @@ class PostProcess(nn.Module):
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
+        # prob = F.softmax(out_logits, -1)
+        # scores, labels = prob[..., :-1].max(-1)
+        #
+        # polys = box_ops.obox2polys(out_boxes)
+
         prob = out_logits.sigmoid()
         topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 500, dim=1)
         scores = topk_values
         topk_boxes = topk_indexes // out_logits.shape[2]
         labels = topk_indexes % out_logits.shape[2]
+
         polys = box_ops.obox2polys(out_boxes)
         polys = torch.gather(polys, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 8)).view(-1, 8)
+
+
         # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = target_sizes.unbind(1)
-        scale = torch.stack([img_w, img_h, img_w, img_h, img_w, img_h, img_w, img_h], dim=1).unsqueeze(1).repeat(1, out_logits.shape[1],1)
+        scale = torch.stack([img_w, img_h, img_w, img_h, img_w, img_h, img_w, img_h], dim=1).unsqueeze(1).repeat(1, out_logits.shape[1], 1)
         polys = polys.view(out_logits.shape[0], -1, 8) * scale
 
         results = [{'scores': s, 'labels': l, 'polys': b} for s, l, b in zip(scores, labels, polys)]

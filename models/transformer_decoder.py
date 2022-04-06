@@ -23,8 +23,8 @@ class TransformerDecoder(nn.Module):
         self.multiscale = args.multiscale
         self.num_layers = num_layers
         self.layers = _get_clones(decoder_layer, num_layers)
-        self.offset = None
         assert num_layers == self.args.dec_layers
+        self.box_embed = None
 
     def forward(self, tgt, memory,
                 tgt_mask: Optional[Tensor] = None,
@@ -36,14 +36,13 @@ class TransformerDecoder(nn.Module):
                 memory_h=None,
                 memory_w=None,
                 grid=None):
-
         output = tgt
 
         intermediate = []
         intermediate_reference_boxes = []
-        reference_boxes = None
 
         for layer_id, layer in enumerate(self.layers):
+
             if layer_id == 0 or layer_id == 1:
                 scale_level = 2
             elif layer_id == 2 or layer_id == 3:
@@ -54,20 +53,26 @@ class TransformerDecoder(nn.Module):
                 assert False
 
             if layer_id == 0:
-                reference_boxes = query_pos  # [num_queries, batch_size, 5]
+                reference_boxes_before_sigmoid = query_pos  # [num_queries, batch_size, 5]
+                reference_boxes = reference_boxes_before_sigmoid.sigmoid().transpose(0, 1)
             else:
-                reference_boxes = reference_boxes
+                tmp = self.bbox_embed[layer_id - 1](output)
+                reference_boxes_before_sigmoid = tmp + reference_boxes_before_sigmoid
+                reference_boxes = reference_boxes_before_sigmoid.sigmoid().transpose(0, 1)
+                reference_boxes_before_sigmoid = reference_boxes_before_sigmoid.detach()
+                reference_boxes = reference_boxes.detach()
 
-            reference_boxes = reference_boxes.sigmoid()
+            obj_center = reference_boxes[..., :2].transpose(0, 1)      # [num_queries, batch_size, 2]
+            obj_wh = reference_boxes[..., 2:4].transpose(0, 1)  # [num_queries, batch_size, 2]
+            obj_theta = reference_boxes[..., 4].transpose(0, 1)
+
             # get sine embedding for the query vector
-            query_ref_boxes_sine_embed_cx = gen_sineembed_for_single_position(reference_boxes[..., 0])
-            query_ref_boxes_sine_embed_cy = gen_sineembed_for_single_position(reference_boxes[..., 1])
-            query_ref_boxes_sine_embed_w =  gen_sineembed_for_single_position(reference_boxes[..., 2])
-            query_ref_boxes_sine_embed_h = gen_sineembed_for_single_position(reference_boxes[..., 3])
-            query_ref_boxes_sine_embed_theta = gen_sineembed_for_single_position(reference_boxes[..., 4])
+            query_ref_boxes_center_sine_embed = gen_sineembed_for_position(obj_center)
+            query_ref_boxes_wh_sine_embed = gen_sineembed_for_position(obj_wh)
+            query_ref_boxes_theat_sine_embed = gen_sineembed_for_single_position(obj_theta)
             # [num_queries, batch_size, 128 * 5]
-            query_ref_boxes_sine_embed = torch.cat([query_ref_boxes_sine_embed_cx, query_ref_boxes_sine_embed_cy,
-                                query_ref_boxes_sine_embed_w, query_ref_boxes_sine_embed_h, query_ref_boxes_sine_embed_theta], dim = 2)
+            query_ref_boxes_sine_embed = torch.cat([query_ref_boxes_center_sine_embed, query_ref_boxes_wh_sine_embed,
+                                query_ref_boxes_theat_sine_embed], dim = 2)
 
             if self.multiscale:
                 memory_ = memory[scale_level]
@@ -84,7 +89,7 @@ class TransformerDecoder(nn.Module):
                 pos_ = pos
                 grid_ = grid
 
-            output, self.offset = layer(output,
+            output = layer(output,
                            memory_,
                            tgt_mask=tgt_mask,
                            memory_mask=memory_mask,
@@ -97,14 +102,8 @@ class TransformerDecoder(nn.Module):
                            memory_w=memory_w_,
                            grid=grid_, )
 
-            intermediate_reference_boxes.append((reference_boxes + self.offset).transpose(0, 1))
-            if layer_id > 1:
-                reference_boxes = reference_boxes.detach() + self.offset # updated_anchor_box ,without sigmoid()
-            else:
-                reference_boxes = reference_boxes + self.offset
-            # reference_boxes = reference_boxes.detach() + self.offset
-            # reference_boxes = reference_boxes + self.offset
             intermediate.append(output)
+            intermediate_reference_boxes.append(reference_boxes)
 
         return torch.stack(intermediate).transpose(1, 2), \
                torch.stack(intermediate_reference_boxes)
@@ -140,8 +139,6 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout3 = nn.Dropout(self.dropout)
         self.norm3 = nn.LayerNorm(self.d_model)
 
-        # Update anchor box
-        self.tgt_offset_proj = MLP(self.d_model, self.d_model, 5, 2)
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
         return tensor if pos is None else tensor + pos
@@ -159,24 +156,26 @@ class TransformerDecoderLayer(nn.Module):
                 grid=None):
 
         num_queries, bs, c = tgt.shape
-        anchor_cx = reference_boxes[..., 0:1].flatten(0, 1) * memory_w
-        anchor_cy = reference_boxes[..., 1:2].flatten(0, 1) * memory_h
-        anchor_w = reference_boxes[..., 2:3].flatten(0, 1) * memory_w
-        anchor_h = reference_boxes[..., 3:4].flatten(0, 1) * memory_h
-        anchor_theta = (reference_boxes[..., 4:5].flatten(0, 1) -0.5) * 3.1415926 #(num_queries*bs, 1)
+        # anchor_cx = reference_boxes[..., 0:1].flatten(0, 1) * memory_w
+        # anchor_cy = reference_boxes[..., 1:2].flatten(0, 1) * memory_h
+        # anchor_w = reference_boxes[..., 2:3].flatten(0, 1) * memory_w
+        # anchor_h = reference_boxes[..., 3:4].flatten(0, 1) * memory_h
+        # anchor_theta = (reference_boxes[..., 4:5].flatten(0, 1) -0.5) * 3.1415926 #(num_queries*bs, 1)
+        #
+        # cos_r = torch.cos(anchor_theta)
+        # sin_r = torch.sin(anchor_theta)
+        # R = torch.cat([cos_r, sin_r, -sin_r, cos_r], dim=-1).view(-1, 2, 2) #(num_queries*bs, 2, 2)
+        # gamma = torch.cat([anchor_w.mul(anchor_w)/4., torch.zeros_like(anchor_w),
+        #                    torch.zeros_like(anchor_h), anchor_h.mul(anchor_h)/4.], dim=-1).view(-1, 2, 2) #(num_queries*bs, 2, 2)
+        # Sigma_inv = torch.inverse(R.bmm(gamma).bmm(R.transpose(1, 2))) #(num_queries*bs, 2, 2)
+        # Sigma_inv_ext = Sigma_inv.unsqueeze(1).repeat(1, grid.shape[1], 1, 1).flatten(0, 1) #(num_q * bs, hw, 2, 2)->(num_q*bs*hw, 2, 2)
+        #
+        # grid_cord = grid.unsqueeze(0).repeat(num_queries, 1, 1, 1).flatten(0, 2).unsqueeze(1) #(num_q, bs, hw, 2)->(num_q*bs*hw, 2)->(num_q*bs*hw, 1, 2)
+        # miu = torch.cat([anchor_cx, anchor_cy], dim=-1).unsqueeze(1).repeat(1, grid.shape[1], 1).flatten(0, 1).unsqueeze(1) #(num_q*bs, hw, 2)->(num_q*bs*hw, 2)->(num_q*bs*hw, 1, 2)
+        # gaussian = torch.exp(-0.5 * (grid_cord - miu).bmm(Sigma_inv_ext).bmm((grid_cord - miu).transpose(1, 2))).sigmoid()\
+        #     .view(num_queries, bs, -1).permute(1, 0, 2).repeat(8, 1, 1) #(num_q*bs*hw, 1, 1)->(num_q, bs, hw)->(bs, num_q, hw)->(bs*head, num_q, hw)
+        gaussian = None
 
-        cos_r = torch.cos(anchor_theta)
-        sin_r = torch.sin(anchor_theta)
-        R = torch.cat([cos_r, sin_r, -sin_r, cos_r], dim=-1).view(-1, 2, 2) #(num_queries*bs, 2, 2)
-        gamma = torch.cat([anchor_w.mul(anchor_w)/4., torch.zeros_like(anchor_w),
-                           torch.zeros_like(anchor_h), anchor_h.mul(anchor_h)/4.], dim=-1).view(-1, 2, 2) #(num_queries*bs, 2, 2)
-        Sigma_inv = torch.inverse(R.bmm(gamma).bmm(R.transpose(1, 2))) #(num_queries*bs, 2, 2)
-        Sigma_inv_ext = Sigma_inv.unsqueeze(1).repeat(1, grid.shape[1], 1, 1).flatten(0, 1) #(num_q * bs, hw, 2, 2)->(num_q*bs*hw, 2, 2)
-
-        grid_cord = grid.unsqueeze(0).repeat(num_queries, 1, 1, 1).flatten(0, 2).unsqueeze(1) #(num_q, bs, hw, 2)->(num_q*bs*hw, 2)->(num_q*bs*hw, 1, 2)
-        miu = torch.cat([anchor_cx, anchor_cy], dim=-1).unsqueeze(1).repeat(1, grid.shape[1], 1).flatten(0, 1).unsqueeze(1) #(num_q*bs, hw, 2)->(num_q*bs*hw, 2)->(num_q*bs*hw, 1, 2)
-        gaussian = torch.exp(-0.5 * (grid_cord - miu).bmm(Sigma_inv_ext).bmm((grid_cord - miu).transpose(1, 2))).sigmoid()\
-            .view(num_queries, bs, -1).permute(1, 0, 2).repeat(8, 1, 1) #(num_q*bs*hw, 1, 1)->(num_q, bs, hw)->(bs, num_q, hw)->(bs*head, num_q, hw)
         # gaussian_vis= gaussian.clone().detach().to('cpu').view(gaussian.shape[0], gaussian.shape[1], 50, 50)[0]
         # gaussians_vis = gaussian_vis[:20]
         # for i in range(20):
@@ -211,8 +210,8 @@ class TransformerDecoderLayer(nn.Module):
         k_pos_y = pos[..., 128:].view(-1, bs, self.nheads, c//(2*self.nheads))
         k = torch.cat([k_content, k_pos_x, k_pos_y], dim=-1).view(-1, bs, c * 2)
 
-        tgt2 = self.cross_attn(query=q, key=k, value=memory, attn_mask=memory_mask,
-                               key_padding_mask=memory_key_padding_mask, gaussian=gaussian)[0]
+        tgt2, _ = self.cross_attn(query=q, key=k, value=memory, attn_mask=memory_mask,
+                               key_padding_mask=memory_key_padding_mask, gaussian=gaussian)
 
         # ========== End of Cross-Attention =============
         tgt = tgt + self.dropout2(tgt2)
@@ -223,9 +222,6 @@ class TransformerDecoderLayer(nn.Module):
         tgt = tgt + self.dropout3(tgt2)
         tgt = self.norm3(tgt)
 
-        anchor_box_offset = None
-        if self.tgt_offset_proj:
-            anchor_box_offset= self.tgt_offset_proj(tgt)
 
-        return tgt, anchor_box_offset
+        return tgt
 

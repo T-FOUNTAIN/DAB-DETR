@@ -242,7 +242,7 @@ if __name__ == '__main__':
 
                 # 对box的可视化
                 boxes = target[j]['boxes']
-                theta = target[j]['theta']
+                theta = (target[j]['theta'] - 0.5)*3.1415926
                 oboxes = np.array(torch.cat([boxes, theta], dim=-1))
                 polys = bt.bbox2type(oboxes, 'poly') # 检验五参数
                 #polys = np.array(target[j]['polys']) # 检验八参数

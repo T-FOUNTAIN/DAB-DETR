@@ -71,7 +71,7 @@ class Transformer(nn.Module):
 
         grid_y, grid_x = torch.meshgrid(torch.arange(0, memory_h), torch.arange(0, memory_w))
         grid = torch.stack((grid_x, grid_y), 2).float().to(src.device)
-        grid = grid.reshape(-1, 2).unsqueeze(0).repeat(bs, 1, 1) # [bs, hw, 2]
+        grid = grid.reshape(-1, 2).unsqueeze(1).repeat(1, bs * self.nheads, 1)
 
         src = src.flatten(2).permute(2, 0, 1)  # flatten NxCxHxW to HWxNxC
         pos = pos.flatten(2).permute(2, 0, 1)  # flatten NxCxHxW to HWxNxC
@@ -91,21 +91,28 @@ class Transformer(nn.Module):
                                       memory_key_padding_mask=mask,
                                       pos=pos,
                                       query_pos=query_embed,
-                                      memory_w=memory_w,
                                       memory_h=memory_h,
+                                      memory_w=memory_w,
                                       grid=grid)
         return hs, references
 
     def forward_multi_scale(self, srcs, masks, query_embed, pos_embeds):
 
+        bs, c, h_16, w_16 = srcs[0].shape
+        bs, c, h_32, w_32 = srcs[1].shape
+        bs, c, h_64, w_64 = srcs[2].shape
+
+        src_16 = srcs[0].flatten(2).permute(2, 0, 1)
         orig_pos_embed_16 = pos_embeds[0] + self.level_embed[0].unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         pos_embed_16 = orig_pos_embed_16.flatten(2).permute(2, 0, 1)
         mask_16 = masks[0].flatten(1)
 
+        src_32 = srcs[1].flatten(2).permute(2, 0, 1)
         orig_pos_embed_32 = pos_embeds[1] + self.level_embed[1].unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         pos_embed_32 = orig_pos_embed_32.flatten(2).permute(2, 0, 1)
         mask_32 = masks[1].flatten(1)
 
+        src_64 = srcs[2].flatten(2).permute(2, 0, 1)
         orig_pos_embed_64 = pos_embeds[2] + self.level_embed[2].unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         pos_embed_64 = orig_pos_embed_64.flatten(2).permute(2, 0, 1)
         mask_64 = masks[2].flatten(1)
@@ -151,12 +158,36 @@ class Transformer(nn.Module):
             memory_flatten.append(m.permute(1, 0, 2))
         query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
 
+        grid_y_16, grid_x_16 = torch.meshgrid(torch.arange(0, h_16), torch.arange(0, w_16))
+        grid_16 = torch.stack((grid_x_16, grid_y_16), 2).float()
+        grid_16.requires_grad = False
+        grid_16 = grid_16.type_as(srcs[0])
+        grid_16 = grid_16.unsqueeze(0).permute(0, 3, 1, 2).flatten(2).permute(2, 0, 1)
+        grid_16 = grid_16.repeat(1, bs * 8, 1)
+
+        grid_y_32, grid_x_32 = torch.meshgrid(torch.arange(0, h_32), torch.arange(0, w_32))
+        grid_32 = torch.stack((grid_x_32, grid_y_32), 2).float()
+        grid_32.requires_grad = False
+        grid_32 = grid_32.type_as(srcs[0])
+        grid_32 = grid_32.unsqueeze(0).permute(0, 3, 1, 2).flatten(2).permute(2, 0, 1)
+        grid_32 = grid_32.repeat(1, bs * 8, 1)
+
+        grid_y_64, grid_x_64 = torch.meshgrid(torch.arange(0, h_64), torch.arange(0, w_64))
+        grid_64 = torch.stack((grid_x_64, grid_y_64), 2).float()
+        grid_64.requires_grad = False
+        grid_64 = grid_64.type_as(srcs[0])
+        grid_64 = grid_64.unsqueeze(0).permute(0, 3, 1, 2).flatten(2).permute(2, 0, 1)
+        grid_64 = grid_64.repeat(1, bs * 8, 1)
+
         # decoder
         hs, references = self.decoder(tgt,
                                       [memory_flatten[0], memory_flatten[1], memory_flatten[2]],
                                       memory_key_padding_mask=[mask_16, mask_32, mask_64],
                                       pos=[pos_embed_16, pos_embed_32, pos_embed_64],
-                                      query_pos=query_embed)
+                                      query_pos=query_embed,
+                                      memory_h=[h_16, h_32, h_64],
+                                      memory_w=[w_16, w_32, w_64],
+                                      grid=[grid_16, grid_32, grid_64])
 
         return hs, references
 

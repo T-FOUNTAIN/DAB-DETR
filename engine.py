@@ -6,6 +6,7 @@
 """
 Train and eval functions used in main.py
 """
+import glob
 import math
 import os
 import sys
@@ -61,13 +62,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # for name, param in model.named_parameters():
         #     if param.grad is None:
         #         print(name, param.is_leaf)
-        for name, parms in model.named_parameters():
-            grad = parms.grad
-            if grad==None:
-                continue
-            else:
-                if torch.all(grad==0):
-                    print('-->name:', name, '-->grad_requirs:',parms.requires_grad, ' -->grad_value_shape:',parms.grad.shape)
+        # for name, parms in model.named_parameters():
+        #     grad = parms.grad
+        #     if grad==None:
+        #         continue
+        #     else:
+        #         if torch.all(grad==0):
+        #             print('-->name:', name, '-->grad_requirs:',parms.requires_grad, ' -->grad_value_shape:',parms.grad.shape)
 
         if max_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
@@ -163,3 +164,41 @@ def evaluate(model, criterion, postprocessors, data_loader, device, output_dir, 
     torch.cuda.empty_cache()
 
     return stats
+
+
+from util.box_ops import attn_vis
+@torch.no_grad()
+def visualization(model, criterion, postprocessors, data_loader, device, output_dir="/home/ttfang/code/DAB-DETR/output/attn_vis/"):
+    model.eval()
+    criterion.eval()
+
+    for file in glob.glob(output_dir + '*.png'):
+        os.remove(file)
+
+    for samples, targets in data_loader:
+        samples = samples.to(device)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        outputs = model(samples)
+
+        attn_maps = torch.stack(model.attn_maps).transpose(0, 1).unbind(0) # [bs, multi-head, num_query, h*w]
+        pred_boxes = torch.stack(model.pred_boxes).transpose(0, 1).unbind(0) # [bs, num_query, 5]
+        query_anchors = torch.stack(model.query_anchors).transpose(0, 1).unbind(0) # [bs, num_query, 5]
+
+        orig_target_sizes = torch.stack([t["img_size"] for t in targets], dim=0)
+        results = postprocessors['bbox'](outputs, orig_target_sizes)
+
+        model.attn_maps = []
+        model.pred_boxes = []
+        model.query_anchors = []
+
+        srcs, _ = samples.decompose()
+
+        for target, output, src, attn_map, pred_box, query_anchor in zip(targets, results, srcs, attn_maps, pred_boxes, query_anchors):
+            attn_vis(src, attn_map, pred_box, query_anchor, output['scores'], output_dir)
+
+
+    del samples
+    del targets
+    del outputs
+
+    torch.cuda.empty_cache()

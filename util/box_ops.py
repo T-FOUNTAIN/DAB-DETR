@@ -6,6 +6,7 @@
 """
 Utilities for bounding box manipulation and GIoU.
 """
+import cv2
 import torch
 import torchsnooper
 import torchvision
@@ -15,7 +16,8 @@ from torchvision.ops.boxes import box_area
 import BboxToolkit as bt
 import time
 import matplotlib.pyplot as plt
-
+import glob
+import os
 
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
@@ -152,3 +154,40 @@ def box_vis(src, pred_polys, pred_labels, pred_scores, tgt_polys, tgt_labels, ou
         img = torchvision.transforms.ToPILImage()(img)
         img.save(output_dir+'/vis/' + str(time.time()) + '_with_bbox.png')
     plt.close()
+
+
+
+def attn_vis(src, attn_map, pred_box, query_anchor, pred_scores, output_dir):
+    mean = torch.tensor([0.485, 0.456, 0.406], device=src.device).view(3, 1, 1).repeat(1, src.shape[1], src.shape[2])
+    std = torch.tensor([0.229, 0.224, 0.225], device=src.device).view(3, 1, 1).repeat(1, src.shape[1], src.shape[2])
+    src = (torch.mul(src, std) + mean)
+
+    img = src.permute((1, 2, 0)).detach().to('cpu').numpy()
+    img = cv2.resize(img, (50, 50))
+    keep = torch.topk(pred_scores, 5)[1]
+
+    fig, axes = plt.subplots(6, 8)
+
+    timestamp = time.time()
+    for k in keep:
+        for l in range(6):
+            query_anchor_l = query_anchor[l]
+            pred_box_l = pred_box[l]
+            pred_box_polys_l = obox2polys(pred_box_l)
+            query_anchor_polys_l = obox2polys(query_anchor_l)
+            pred_box_polys_l = (pred_box_polys_l[k] * 50).to('cpu').numpy() #[8, ]
+            query_anchor_polys_l = (query_anchor_polys_l[k] * 50).to('cpu').numpy() #[8, ]
+            for h in range(8):
+                attn_map_l_h = (attn_map[l][h, k, :].view(50, 50)).to('cpu').numpy() #[50, 50]
+                attn_map_l_h = (attn_map_l_h - attn_map_l_h.min()) / (attn_map_l_h.max() - attn_map_l_h.min())
+                attn_map_l_h = np.uint8(255 * attn_map_l_h)
+                heatmap = cv2.applyColorMap(attn_map_l_h, cv2.COLORMAP_JET)
+                img_uint8 = np.array(img * 255, dtype='uint8')
+                out = cv2.addWeighted(src1=img_uint8, alpha=0.8, src2=heatmap, beta=0.4, gamma=0)
+                axes[l][h].imshow(out)
+                # bt.draw_poly(axes[l][h], pred_box_polys_l, texts=None, color='blue')
+                # bt.draw_poly(axes[l][h], query_anchor_polys_l, texts=None, color='red')
+        plt.savefig(output_dir + str(timestamp) +'_'+str(k)+ '.png')
+        # if k == 4:
+        #     plt.savefig(output_dir + str(timestamp) +'.png')
+        # plt.show()

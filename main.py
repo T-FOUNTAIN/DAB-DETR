@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 import datasets
 import util.misc as utils
 from datasets import build_dataset
-from engine import evaluate, train_one_epoch
+from engine import evaluate, train_one_epoch, visualization
 from models import build_model
 
 
@@ -85,6 +85,7 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N', help='start epoch')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--vis', action='store_true')
+    parser.add_argument('--inter_attn_vis', action='store_true')
     parser.add_argument('--eval_every_epoch', default=1, type=int, help='eval every ? epoch')
     parser.add_argument('--save_every_epoch', default=1, type=int, help='save model weights every ? epoch')
     parser.add_argument('--num_workers', default=2, type=int)
@@ -194,6 +195,10 @@ def main(args):
 
         model_dict.update(pretrained_dict)
         model_without_ddp.load_state_dict(model_dict)
+
+    if args.inter_attn_vis:
+        visualization(model, criterion, post_processors, data_loader_val, device)
+        return
 
     if args.eval:
         test_stats = evaluate(model, criterion, post_processors, data_loader_val, device, args.output_dir, dataset_val.classes, vis=args.vis)
